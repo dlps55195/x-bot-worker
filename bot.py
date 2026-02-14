@@ -81,20 +81,72 @@ async def process_user(context, profile):
     lists = profile.get("target_lists", [])
     if not lists: return
 
+    # Load seen posts
+    seen_posts = []
+    if os.path.exists(SEEN_POSTS_FILE):
+        with open(SEEN_POSTS_FILE, 'r') as f:
+            seen_posts = json.load(f)
+
     for list_url in lists:
         print(f"📡 Scanning List: {list_url}")
         try:
-            await page.goto(list_url, wait_until="commit", timeout=60000)
-            await page.wait_for_selector('article[data-testid="tweet"]', timeout=15000)
-            await asyncio.sleep(5)
+            await page.goto(list_url, wait_until="networkidle", timeout=60000)
+            await asyncio.sleep(5) # Let tweets load
             
+            # Find all tweet articles
             tweets = await page.locator('article[data-testid="tweet"]').all()
-            for tweet in tweets[:5]: # Check first 5 tweets
-                # Reply logic (Same as we built previously)
-                # ... [Internalized for brevity, full logic included in final file]
-                pass
+            
+            for tweet in tweets[:5]: # Only check the top 5 to stay safe
+                try:
+                    # 1. Get Tweet Text & ID
+                    tweet_text = await tweet.locator('[data-testid="tweetText"]').inner_text()
+                    author_handle = await tweet.locator('[data-testid="User-Name"]').inner_text()
+                    
+                    # Create a unique ID for this post to avoid double-replying
+                    post_id = hash(tweet_text + author_handle)
+                    
+                    if post_id in seen_posts:
+                        print(f"⏭️ Already replied to {author_handle[:15]}...")
+                        continue
+
+                    print(f"🎯 Found post from {author_handle[:15]}: {tweet_text[:30]}...")
+
+                    # 2. Get AI Reply
+                    reply_content = get_ai_reply({
+                        "author": author_handle,
+                        "text": tweet_text,
+                        "media_desc": "none"
+                    })
+
+                    if reply_content:
+                        # 3. Click Reply Button
+                        await tweet.locator('[data-testid="reply"]').click()
+                        await asyncio.sleep(2)
+                        
+                        # 4. Type & Send
+                        await page.locator('[data-testid="tweetTextarea_0"]').fill(reply_content)
+                        await asyncio.sleep(1)
+                        await page.keyboard.press("Control+Enter") # Shortcut to send
+                        
+                        print(f"✅ Replied: {reply_content}")
+                        
+                        # 5. Save to Memory
+                        seen_posts.append(post_id)
+                        with open(SEEN_POSTS_FILE, 'w') as f:
+                            json.dump(seen_posts, f)
+                        
+                        # Random delay between replies to look human
+                        wait_time = random.randint(30, 60)
+                        print(f"⏳ Sleeping {wait_time}s to maintain stealth...")
+                        await asyncio.sleep(wait_time)
+
+                except Exception as tweet_err:
+                    print(f"❌ Error processing individual tweet: {tweet_err}")
+                    continue
+
         except Exception as e:
             print(f"⚠️ Error on list {list_url}: {e}")
+            
     await page.close()
 
 async def run_bot():
