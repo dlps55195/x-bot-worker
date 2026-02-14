@@ -2,3 +2,4 @@ playwright
 supabase
 httpx
 python-dotenv
+fake-useragent
