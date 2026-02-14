@@ -79,39 +79,67 @@ def get_ai_reply(tweet_data):
 async def process_user(context, profile):
     page = await context.new_page()
     lists = profile.get("target_lists", [])
-    if not lists: return
+    if not lists:
+        print("ℹ️ No target lists found for this user.")
+        return
 
-    # Load seen posts
+    # Load seen posts from local memory to avoid double-replying
     seen_posts = []
     if os.path.exists(SEEN_POSTS_FILE):
-        with open(SEEN_POSTS_FILE, 'r') as f:
-            seen_posts = json.load(f)
+        try:
+            with open(SEEN_POSTS_FILE, 'r') as f:
+                seen_posts = json.load(f)
+        except:
+            seen_posts = []
 
     for list_url in lists:
         print(f"📡 Scanning List: {list_url}")
         try:
-            await page.goto(list_url, wait_until="networkidle", timeout=60000)
-            await asyncio.sleep(5) # Let tweets load
+            # FIX: Wait for 'commit' (the URL changed) then wait manually. 
+            # This prevents the 'networkidle' hang you saw in the logs.
+            await page.goto(list_url, wait_until="commit", timeout=60000)
+            print("⏳ Page committed. Waiting for tweets to render...")
+            await asyncio.sleep(10) # Heavy wait for X's slow UI
+
+            # STEALTH: Check if X redirected us to the login page (happens if cookies die)
+            if "login" in page.url or "i/flow/login" in page.url:
+                print(f"❌ AUTH FAILURE: Cookies for user {profile['id']} have expired.")
+                break
+
+            # Ensure tweets are actually on the screen
+            await page.wait_for_selector('article[data-testid="tweet"]', timeout=30000)
             
             # Find all tweet articles
             tweets = await page.locator('article[data-testid="tweet"]').all()
-            
-            for tweet in tweets[:5]: # Only check the top 5 to stay safe
+            print(f"👀 Found {len(tweets)} tweets. Processing top 5...")
+
+            replies_this_run = 0
+            for tweet in tweets:
+                if replies_this_run >= 5: # Safety cap per list
+                    break
+
                 try:
-                    # 1. Get Tweet Text & ID
-                    tweet_text = await tweet.locator('[data-testid="tweetText"]').inner_text()
-                    author_handle = await tweet.locator('[data-testid="User-Name"]').inner_text()
-                    
-                    # Create a unique ID for this post to avoid double-replying
-                    post_id = hash(tweet_text + author_handle)
-                    
-                    if post_id in seen_posts:
-                        print(f"⏭️ Already replied to {author_handle[:15]}...")
+                    # 1. Extract Tweet Text and Author
+                    # We use .first to ensure we don't accidentally grab a sub-element
+                    tweet_text_el = tweet.locator('[data-testid="tweetText"]').first
+                    author_handle_el = tweet.locator('[data-testid="User-Name"]').first
+
+                    if not await tweet_text_el.count() or not await author_handle_el.count():
                         continue
 
-                    print(f"🎯 Found post from {author_handle[:15]}: {tweet_text[:30]}...")
+                    tweet_text = await tweet_text_el.inner_text()
+                    author_handle = await author_handle_el.inner_text()
 
-                    # 2. Get AI Reply
+                    # Create a unique ID to track this post
+                    post_id = str(hash(f"{author_handle}_{tweet_text[:50]}"))
+
+                    if post_id in seen_posts:
+                        print(f"⏭️ Skipping: Already replied to {author_handle.split()[-1]}")
+                        continue
+
+                    print(f"🎯 Analyzing post from {author_handle.split()[-1]}...")
+
+                    # 2. Generate the AI Reply using the Universal Human Framework
                     reply_content = get_ai_reply({
                         "author": author_handle,
                         "text": tweet_text,
@@ -119,33 +147,36 @@ async def process_user(context, profile):
                     })
 
                     if reply_content:
-                        # 3. Click Reply Button
-                        await tweet.locator('[data-testid="reply"]').click()
-                        await asyncio.sleep(2)
-                        
-                        # 4. Type & Send
+                        # 3. Execution: Click Reply -> Type -> Send
+                        await tweet.locator('[data-testid="reply"]').first.click()
+                        await asyncio.sleep(3) # Wait for reply modal
+
+                        # Fill the tweet textarea
                         await page.locator('[data-testid="tweetTextarea_0"]').fill(reply_content)
-                        await asyncio.sleep(1)
-                        await page.keyboard.press("Control+Enter") # Shortcut to send
-                        
-                        print(f"✅ Replied: {reply_content}")
-                        
-                        # 5. Save to Memory
+                        await asyncio.sleep(2)
+
+                        # Send via Keyboard (Control+Enter is more 'human' than clicking the button)
+                        await page.keyboard.press("Control+Enter")
+                        print(f"✅ SUCCESSFULLY REPLIED: {reply_content}")
+
+                        # 4. Update Memory
                         seen_posts.append(post_id)
                         with open(SEEN_POSTS_FILE, 'w') as f:
                             json.dump(seen_posts, f)
+
+                        replies_this_run += 1
                         
-                        # Random delay between replies to look human
-                        wait_time = random.randint(30, 60)
-                        print(f"⏳ Sleeping {wait_time}s to maintain stealth...")
-                        await asyncio.sleep(wait_time)
+                        # 5. Anti-Ban Delay (Randomized)
+                        delay = random.randint(50, 100)
+                        print(f"⏳ Sleeping {delay}s to stay under the radar...")
+                        await asyncio.sleep(delay)
 
                 except Exception as tweet_err:
-                    print(f"❌ Error processing individual tweet: {tweet_err}")
+                    print(f"⚠️ Skipping tweet due to UI error: {tweet_err}")
                     continue
 
         except Exception as e:
-            print(f"⚠️ Error on list {list_url}: {e}")
+            print(f"❌ Critical error on list {list_url}: {e}")
             
     await page.close()
 
