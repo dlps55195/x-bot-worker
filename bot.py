@@ -130,11 +130,12 @@ async def process_user(context, profile):
         
         replies_count = 0
         for i, tweet in enumerate(tweets):
-            if replies_count >= 3: break # Keep it light per user
+            if replies_count >= 3: break 
 
             try:
-                # Scroll the tweet into view so it's not "outside viewport"
+                # 1. FORCE SCROLL: Move the tweet to the middle of the screen
                 await tweet.scroll_into_view_if_needed()
+                await asyncio.sleep(1) # Give X a moment to re-render
                 
                 text_el = tweet.locator('[data-testid="tweetText"]').first
                 author_el = tweet.locator('[data-testid="User-Name"]').first
@@ -152,9 +153,14 @@ async def process_user(context, profile):
                 reply_content = get_ai_reply({"author": author_handle, "text": tweet_text, "media_desc": "none"})
 
                 if reply_content:
-                    # FIX 3: Use force=True to click 'through' any invisible overlays
+                    # 2. CLICK FIX: Ensure the button is visible and click center
                     reply_btn = tweet.locator('[data-testid="reply"]').first
-                    await reply_btn.click(force=True, timeout=5000)
+                    
+                    # Wait until the button is actually "interactable"
+                    await reply_btn.wait_for(state="visible", timeout=5000)
+                    
+                    # Force click at a specific position to avoid "outside viewport" errors
+                    await reply_btn.click(force=True, timeout=5000, position={"x": 10, "y": 10})
                     
                     await asyncio.sleep(3)
                     await page.locator('[data-testid="tweetTextarea_0"]').fill(reply_content)
@@ -163,7 +169,7 @@ async def process_user(context, profile):
                     
                     print(f"✅ REPLIED to {author_handle}")
                     
-                    # Update Memory correctly
+                    # Update Memory
                     seen_posts.append(post_id)
                     with open(SEEN_POSTS_FILE, 'w') as f:
                         json.dump(seen_posts, f)
@@ -172,7 +178,11 @@ async def process_user(context, profile):
                     await asyncio.sleep(random.randint(40, 80))
 
             except Exception as e:
-                print(f"⚠️ Error on tweet {i}: {str(e)[:50]}...")
+                # Log a cleaner error for viewport issues
+                if "outside of the viewport" in str(e):
+                    print(f"⚠️ Tweet {i} was hidden. Skipping...")
+                else:
+                    print(f"⚠️ Error on tweet {i}: {str(e)[:50]}...")
                 continue
 
     except Exception as e:
