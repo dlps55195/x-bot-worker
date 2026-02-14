@@ -78,8 +78,7 @@ def get_ai_reply(tweet_data):
     - Output ONLY the raw reply text.
     """
     
-    try:
-        payload = {
+    payload = {
         "model": "google/gemini-2.0-flash-001", # OpenRouter model string
         "messages": [{"role": "user", "content": system_instruction}]
     }
