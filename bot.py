@@ -90,102 +90,86 @@ def get_ai_reply(tweet_data):
 
 async def process_user(context, profile):
     page = await context.new_page()
-    lists = profile.get("target_lists", [])
-    if not lists: return
+    list_url = profile.get("target_lists", [None])[0]
+    if not list_url: return
 
-    # Load memory to avoid double-replying
+    # FIX 1: Ensure seen_posts is strictly a list
     seen_posts = []
     if os.path.exists(SEEN_POSTS_FILE):
         try:
             with open(SEEN_POSTS_FILE, 'r') as f:
-                seen_posts = json.load(f)
+                data = json.load(f)
+                seen_posts = data if isinstance(data, list) else []
         except:
             seen_posts = []
 
-    for list_url in lists:
-        print(f"📡 Scanning List: {list_url}")
+    print(f"📡 Scanning List: {list_url}")
+    try:
+        await page.goto(list_url, wait_until="commit", timeout=60000)
+        await asyncio.sleep(10) 
+
+        # FIX 2: Close any popups/banners that intercept clicks
         try:
-            # FIX: Use 'commit' + manual wait to avoid timeouts
-            await page.goto(list_url, wait_until="commit", timeout=60000)
-            print("⏳ Page committed. Waiting for tweets to render...")
-            await asyncio.sleep(8) 
+            # Look for "Close" or "Dismiss" on any annoying banners
+            banner_close = page.locator('[data-testid="app-bar-close"], [aria-label="Close"]').first
+            if await banner_close.is_visible():
+                await banner_close.click()
+        except:
+            pass
 
-            # Check if cookies expired (Redirected to login)
-            if "login" in page.url or "i/flow/login" in page.url:
-                print(f"❌ AUTH FAILURE: Cookies for user {profile['id']} have expired.")
-                break
+        # Wait for tweets
+        await page.wait_for_selector('article[data-testid="tweet"]', timeout=20000)
+        tweets = await page.locator('article[data-testid="tweet"]').all()
+        
+        replies_count = 0
+        for i, tweet in enumerate(tweets):
+            if replies_count >= 3: break # Keep it light per user
 
-            # Wait for tweets
             try:
-                await page.wait_for_selector('article[data-testid="tweet"]', timeout=20000)
-            except:
-                print("⚠️ No tweets found (or timeout waiting for selector).")
-                continue
-            
-            tweets = await page.locator('article[data-testid="tweet"]').all()
-            print(f"👀 Found {len(tweets)} tweets. Checking top 5...")
+                # Scroll the tweet into view so it's not "outside viewport"
+                await tweet.scroll_into_view_if_needed()
+                
+                text_el = tweet.locator('[data-testid="tweetText"]').first
+                author_el = tweet.locator('[data-testid="User-Name"]').first
+                
+                if not await text_el.count(): continue
+                
+                tweet_text = await text_el.inner_text()
+                author_handle = await author_el.inner_text()
+                post_id = str(hash(f"{author_handle}_{tweet_text[:50]}"))
 
-            replies_count = 0
-            for tweet in tweets:
-                if replies_count >= 5: break
-
-                try:
-                    # Extract Data
-                    tweet_text_el = tweet.locator('[data-testid="tweetText"]').first
-                    author_handle_el = tweet.locator('[data-testid="User-Name"]').first
-                    
-                    if not await tweet_text_el.count() or not await author_handle_el.count():
-                        continue
-
-                    tweet_text = await tweet_text_el.inner_text()
-                    author_handle = await author_handle_el.inner_text()
-                    
-                    # Create ID
-                    post_id = str(hash(f"{author_handle}_{tweet_text[:50]}"))
-                    
-                    if post_id in seen_posts:
-                        print(f"⏭️ Skipping: Already replied to {author_handle.split()[-1]}")
-                        continue
-
-                    print(f"🎯 New post from {author_handle.split()[-1]}...")
-
-                    # Generate Reply
-                    reply_content = get_ai_reply({
-                        "author": author_handle,
-                        "text": tweet_text,
-                        "media_desc": "none"
-                    })
-
-                    if reply_content:
-                        # Click Reply
-                        await tweet.locator('[data-testid="reply"]').first.click()
-                        await asyncio.sleep(2)
-                        
-                        # Type & Send
-                        await page.locator('[data-testid="tweetTextarea_0"]').fill(reply_content)
-                        await asyncio.sleep(1)
-                        await page.keyboard.press("Control+Enter")
-                        
-                        print(f"✅ REPLIED: {reply_content}")
-                        
-                        # Update Memory
-                        seen_posts.append(post_id)
-                        with open(SEEN_POSTS_FILE, 'w') as f:
-                            json.dump(seen_posts, f)
-                        
-                        replies_count += 1
-                        
-                        # Random Delay
-                        delay = random.randint(40, 90)
-                        print(f"⏳ Sleeping {delay}s...")
-                        await asyncio.sleep(delay)
-
-                except Exception as e:
-                    print(f"⚠️ Error on tweet: {e}")
+                if post_id in seen_posts:
+                    print(f"⏭️ Already seen {author_handle[:15]}")
                     continue
 
-        except Exception as e:
-            print(f"⚠️ Error on list {list_url}: {e}")
+                reply_content = get_ai_reply({"author": author_handle, "text": tweet_text, "media_desc": "none"})
+
+                if reply_content:
+                    # FIX 3: Use force=True to click 'through' any invisible overlays
+                    reply_btn = tweet.locator('[data-testid="reply"]').first
+                    await reply_btn.click(force=True, timeout=5000)
+                    
+                    await asyncio.sleep(3)
+                    await page.locator('[data-testid="tweetTextarea_0"]').fill(reply_content)
+                    await asyncio.sleep(1)
+                    await page.keyboard.press("Control+Enter")
+                    
+                    print(f"✅ REPLIED to {author_handle}")
+                    
+                    # Update Memory correctly
+                    seen_posts.append(post_id)
+                    with open(SEEN_POSTS_FILE, 'w') as f:
+                        json.dump(seen_posts, f)
+                    
+                    replies_count += 1
+                    await asyncio.sleep(random.randint(40, 80))
+
+            except Exception as e:
+                print(f"⚠️ Error on tweet {i}: {str(e)[:50]}...")
+                continue
+
+    except Exception as e:
+        print(f"❌ Error on list: {e}")
             
     await page.close()
 
