@@ -36,10 +36,15 @@ def sanitize_cookies(cookie_list):
 
 def get_ai_reply(tweet_data):
     """
-    Generates a reply using the Universal Human Framework.
+    Generates a reply using OpenRouter only.
     """
     url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
+    # Note: AI_API_KEY should be your OpenRouter key
+    headers = {
+        "Authorization": f"Bearer {AI_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://your-site.com", # Optional, for OpenRouter rankings
+    }
     
     # --- YOUR ORIGINAL PROMPT (UNTOUCHED) ---
     system_instruction = f"""
@@ -75,17 +80,20 @@ def get_ai_reply(tweet_data):
     
     try:
         payload = {
-            "model": "google/gemini-2.0-flash-001",
-            "messages": [{"role": "user", "content": system_instruction}]
-        }
+        "model": "google/gemini-2.0-flash-001", # OpenRouter model string
+        "messages": [{"role": "user", "content": system_instruction}]
+    }
+    
+    try:
         with httpx.Client() as client:
             resp = client.post(url, headers=headers, json=payload, timeout=30.0)
             if resp.status_code == 200:
-                content = resp.json()['choices'][0]['message']['content'].strip()
-                return content.replace('"', '').lower()
-            return None
+                return resp.json()['choices'][0]['message']['content'].strip().lower()
+            else:
+                print(f"⚠️ AI Error {resp.status_code}: {resp.text}")
+                return None
     except Exception as e:
-        print(f"⚠️ AI Error: {e}")
+        print(f"⚠️ AI Network Error: {e}")
         return None
 
 async def process_user(context, profile):
