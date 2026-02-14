@@ -1,32 +1,52 @@
-name: X Bot Runner
+name: X Bot Auto-Reply
 
 on:
-  repository_dispatch:
-    types: [start_bot]
   schedule:
-    - cron: '*/30 * * * *' # Runs every 30 minutes
-  workflow_dispatch: # Allows you to run it manually for testing
+    - cron: '0 * * * *' # Runs every hour. Change to '*/30 * * * *' for every 30 mins.
+  workflow_dispatch: # Allows you to run it manually with a button click.
 
 jobs:
-  run-bot:
+  build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Important for pulling changes correctly
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install playwright fake-useragent httpx
           playwright install chromium
 
-      - name: Run Bot Engine
+      - name: Run Bot
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          X_COOKIES: ${{ secrets.X_COOKIES }}
         run: python bot.py
+
+      - name: Commit and Push Changes
+        run: |
+          # 1. Identity Setup
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 2. Stage and Commit Memory File
+          git add seen_posts.json
+          git commit -m "update: seen posts memory [skip ci]" || echo "No changes to commit"
+          
+          # 3. Resilient Pull/Push Loop
+          # Tries 3 times with a 15-second wait if GitHub's server (Error 500) acts up
+          for i in {1..3}; do
+            echo "Attempt $i: Pulling and pushing changes..."
+            git pull --rebase origin main && git push origin main && break || {
+              echo "Attempt $i failed. Retrying in 15s..."
+              sleep 15
+            }
+          done
