@@ -39,8 +39,7 @@ def sanitize_cookies(cookie_list):
 
 def get_ai_reply(tweet_data):
     """
-    Generates a reply using OpenRouter.
-    The prompt remains exactly as originally provided.
+    Generates a reply using OpenRouter only.
     """
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -49,7 +48,7 @@ def get_ai_reply(tweet_data):
         "HTTP-Referer": "https://education-bot-demo.com", 
     }
     
-    # --- ORIGINAL PROMPT (UNTOUCHED) ---
+    # --- YOUR ORIGINAL PROMPT (UNTOUCHED) ---
     system_instruction = f"""
     [POST CONTEXT]
     Author: {tweet_data['author']}
@@ -82,7 +81,7 @@ def get_ai_reply(tweet_data):
     """
     
     payload = {
-        "model": "google/gemini-2.0-flash-001",
+        "model": "google/gemini-2.0-flash-001", 
         "messages": [{"role": "user", "content": system_instruction}]
     }
     
@@ -100,15 +99,12 @@ def get_ai_reply(tweet_data):
         return None
 
 async def process_user(context, profile):
-    """
-    Processes a specific user profile to scan their lists and interact.
-    """
     page = await context.new_page()
     list_url = profile.get("target_lists", [None])[0]
-    if not list_url:
+    if not list_url: 
         return
 
-    # Load memory
+    # Memory handling
     seen_posts = []
     if os.path.exists(SEEN_POSTS_FILE):
         try:
@@ -129,7 +125,7 @@ async def process_user(context, profile):
             if await page.locator(selector).is_visible():
                 await page.locator(selector).click()
 
-        # Wait for content to render
+        # Wait for tweets to render
         await page.wait_for_selector('article[data-testid="tweet"]', timeout=20000)
         tweets = await page.locator('article[data-testid="tweet"]').all()
         
@@ -138,7 +134,7 @@ async def process_user(context, profile):
             if replies_count >= 3: break 
 
             try:
-                # Ensure the tweet is in view before interacting
+                # Ensure visibility
                 await tweet.scroll_into_view_if_needed()
                 await asyncio.sleep(1.5)
                 
@@ -160,25 +156,22 @@ async def process_user(context, profile):
                     reply_btn = tweet.locator('[data-testid="reply"]').first
                     await reply_btn.click()
                     
-                    # Wait for the composer to be ready
+                    # Human-like typing
                     composer = page.locator('[data-testid="tweetTextarea_0"]').first
                     await composer.wait_for(state="visible", timeout=5000)
-                    
-                    # Human-like typing for better reliability
                     await composer.click()
                     await page.keyboard.type(reply_content, delay=40)
                     await asyncio.sleep(1)
-                    
-                    # Submit using keyboard shortcut
                     await page.keyboard.press("Control+Enter")
+                    
                     print(f"✅ Sent reply to {author_handle.splitlines()[0]}")
                     
+                    # Memory update capped at 1000 items to prevent bloat
                     seen_posts.append(post_id)
                     with open(SEEN_POSTS_FILE, 'w') as f:
                         json.dump(seen_posts[-1000:], f)
                     
                     replies_count += 1
-                    # Varied delay between replies
                     await asyncio.sleep(random.randint(45, 90))
 
             except Exception as e:
@@ -187,6 +180,9 @@ async def process_user(context, profile):
 
     except PlaywrightTimeoutError:
         print("❌ Timeout: The page took too long to load.")
+        # Debugging step: Save a screenshot to see what blocked the script
+        await page.screenshot(path="timeout_error.png")
+        print("📸 Saved error screenshot to timeout_error.png")
     except Exception as e:
         print(f"❌ Error during list processing: {e}")
             
